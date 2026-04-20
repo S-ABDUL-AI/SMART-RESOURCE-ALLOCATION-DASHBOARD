@@ -63,6 +63,49 @@ def _inject_styles() -> None:
     )
 
 
+def _assign_priority_band(result: pd.DataFrame) -> pd.Series:
+    """Assign Low/Medium/High priority bands from need_score tertiles."""
+    scores = pd.to_numeric(result["need_score"], errors="coerce").fillna(0.0)
+    if len(scores) >= 3 and scores.nunique() >= 3:
+        q1, q2 = scores.quantile([1 / 3, 2 / 3])
+        labels = np.where(scores <= q1, "Low", np.where(scores <= q2, "Medium", "High"))
+        return pd.Series(labels, index=result.index)
+    return pd.Series(["Medium"] * len(result), index=result.index)
+
+
+def _ministerial_brief(result: pd.DataFrame, budget: float) -> tuple[str, str, str]:
+    """Return executive brief in Risk / Implication / Action now format."""
+    high = result[result["priority_band"] == "High"]
+    high_share = float(high["share_of_budget"].sum()) if len(high) else 0.0
+    high_count = int(len(high))
+    top_two_share = float(result["share_of_budget"].head(2).sum()) if len(result) else 0.0
+    mean_poverty_top3 = float(result["poverty_rate"].head(3).mean() * 100) if len(result) else 0.0
+    top_region = str(result.iloc[0]["region"]) if len(result) else "N/A"
+    top_share = float(result.iloc[0]["share_of_budget"]) if len(result) else 0.0
+
+    risk = (
+        f"Budget concentration risk is elevated: {high_share:.1f}% of the {budget / 1_000_000:,.0f}M envelope "
+        f"flows to {high_count} high-priority region(s), and the top two regions absorb {top_two_share:.1f}%."
+    )
+    implication = (
+        f"The allocation is strongly targeted, which improves focus but raises delivery dependency on a small set of regions. "
+        f"{top_region} alone receives {top_share:.1f}%, while top-3 average poverty remains {mean_poverty_top3:.1f}%."
+    )
+
+    if high_share >= 50:
+        action_now = (
+            "Protect service continuity in high-priority regions immediately, assign monthly execution reviews for the top two regions, "
+            "and reserve a rapid-response buffer for underperforming programs."
+        )
+    else:
+        action_now = (
+            "Validate whether high-priority regions are receiving enough depth, tighten implementation tracking in top-funded areas, "
+            "and link disbursements to measurable poverty-reduction milestones."
+        )
+
+    return risk, implication, action_now
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Smart Resource Allocation Dashboard",
@@ -136,14 +179,7 @@ def main() -> None:
         st.stop()
 
     # Add priority band for cleaner executive interpretation.
-    scores = pd.to_numeric(result["need_score"], errors="coerce").fillna(0.0)
-    if len(scores) >= 3 and scores.nunique() >= 3:
-        q1, q2 = scores.quantile([1 / 3, 2 / 3])
-        result["priority_band"] = np.where(
-            scores <= q1, "Low", np.where(scores <= q2, "Medium", "High")
-        )
-    else:
-        result["priority_band"] = "Medium"
+    result["priority_band"] = _assign_priority_band(result)
     result["priority_area"] = result["priority_band"].map(
         {"Low": "🟢 Low", "Medium": "🟡 Medium", "High": "🔴 High"}
     )
@@ -151,9 +187,11 @@ def main() -> None:
     # --- Key indicators ---
     st.subheader("Key indicators")
     total_pop = int(result["population"].sum())
-    top_share = float(result.iloc[0]["share_of_budget"])
     top_region = str(result.iloc[0]["region"])
+    top_share = float(result.iloc[0]["share_of_budget"])
     top_band = str(result.iloc[0]["priority_band"])
+    high_count = int((result["priority_band"] == "High").sum())
+    high_share = float(result.loc[result["priority_band"] == "High", "share_of_budget"].sum())
 
     kpi = st.container(border=True)
     with kpi:
@@ -166,23 +204,42 @@ def main() -> None:
             )
         with k2:
             st.metric(
-                label="Population (sample)",
-                value=f"{total_pop / 1_000_000:.2f} M",
-                help="Sum of illustrative population across sample regions.",
+                label="High-priority regions",
+                value=high_count,
+                help="Regions in the top priority band under this budget run.",
             )
         with k3:
             st.metric(
-                label="Top need region",
-                value=top_region[:18] + ("…" if len(top_region) > 18 else ""),
-                help="Region with the highest need_score in the sample.",
+                label="Budget share to high-priority regions",
+                value=f"{high_share:.1f}%",
+                help="Total budget directed to high-priority regions in this run.",
             )
         with k4:
             st.metric(
-                label="Top region budget share",
-                value=f"{top_share:.1f}%",
-                help="Share of the envelope going to the highest-need region under proportional rule.",
+                label="Top need region",
+                value=top_region[:18] + ("…" if len(top_region) > 18 else ""),
+                help="Region with the highest need score in the sample.",
             )
-    st.caption(f"Current highest-priority band in this run: **{top_band}**")
+    st.caption(
+        f"Current highest-priority band in this run: **{top_band}** · "
+        f"Top region share: **{top_share:.1f}%** · Population covered (sample): **{total_pop / 1_000_000:.2f} M**"
+    )
+
+    st.subheader("Ministerial brief")
+    st.caption("Decision summary in three parts: risk, implication, and immediate action.")
+    risk_text, implication_text, action_now_text = _ministerial_brief(result, budget)
+    policy_box = st.container(border=True)
+    with policy_box:
+        b1, b2, b3 = st.columns((1, 1, 1), gap="medium")
+        with b1:
+            st.markdown("#### Risk")
+            st.write(risk_text)
+        with b2:
+            st.markdown("#### Implication")
+            st.write(implication_text)
+        with b3:
+            st.markdown("#### Action now")
+            st.write(action_now_text)
 
     st.subheader("Allocation and ranking")
     st.caption(
@@ -238,7 +295,7 @@ def main() -> None:
             )
             st.bar_chart(chart_df, height=360)
 
-    st.subheader("Recommendations")
+    st.subheader("Regional recommendation notes")
     rec_box = st.container(border=True)
     with rec_box:
         for line in alloc.recommendation_lines(result, top_n=3):
