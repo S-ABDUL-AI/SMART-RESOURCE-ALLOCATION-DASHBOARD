@@ -106,6 +106,51 @@ def _ministerial_brief(result: pd.DataFrame, budget: float) -> tuple[str, str, s
     return risk, implication, action_now
 
 
+def _focus_region_text(result: pd.DataFrame, region_name: str) -> tuple[str, str]:
+    """Return concise 'why' and 'action' text for the selected region."""
+    match = result.loc[result["region"].astype(str) == str(region_name)]
+    row = match.iloc[0] if len(match) else result.iloc[0]
+    region = str(row["region"])
+
+    med_need = float(result["need_score"].median())
+    med_poverty = float(result["poverty_rate"].median())
+    med_share = float(result["share_of_budget"].median())
+
+    why_parts: list[str] = []
+    why_parts.append(
+        "need level is above the regional midpoint"
+        if float(row["need_score"]) >= med_need
+        else "need level is below the regional midpoint"
+    )
+    why_parts.append(
+        "poverty pressure is above the regional midpoint"
+        if float(row["poverty_rate"]) >= med_poverty
+        else "poverty pressure is below the regional midpoint"
+    )
+    why_parts.append(
+        "its budget share is above the midpoint"
+        if float(row["share_of_budget"]) >= med_share
+        else "its budget share is below the midpoint"
+    )
+    why = f"For {region}: " + "; ".join(why_parts) + "."
+
+    band = str(row.get("priority_band", "Medium"))
+    if band == "High":
+        action = (
+            f"For {region}, prioritize immediate service continuity, strengthen delivery capacity, "
+            "and monitor monthly execution risks."
+        )
+    elif band == "Medium":
+        action = (
+            f"For {region}, protect core services and target bottlenecks early so pressure does not escalate."
+        )
+    else:
+        action = (
+            f"For {region}, maintain baseline support and monitor indicators for early signs of deterioration."
+        )
+    return why, action
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Smart Resource Allocation Dashboard",
@@ -127,8 +172,8 @@ def main() -> None:
     st.title("Smart Resource Allocation Dashboard")
     st.markdown(
         '<p class="app-purpose"><strong>Challenge / problem statement:</strong> '
-        "Allocate a fixed public budget across regions using a transparent need-based rule, "
-        "with a clear executive view of trade-offs and priority areas."
+        "Public leaders must distribute a limited budget across regions with unequal need, while balancing fairness, "
+        "impact, and delivery risk under resource constraints."
         "</p>",
         unsafe_allow_html=True,
     )
@@ -152,6 +197,14 @@ def main() -> None:
     )
     budget = float(budget_m * 1_000_000)
     st.session_state.budget_value = budget
+
+    region_options = [str(r.get("region", "")) for r in SAMPLE_REGIONS if str(r.get("region", ""))]
+    selected_region = st.sidebar.selectbox(
+        "Region to highlight",
+        options=region_options,
+        index=0,
+        help="Changes the focus brief in the main panel.",
+    )
 
     st.sidebar.divider()
     with st.sidebar.expander("Sample region data", expanded=False):
@@ -224,6 +277,16 @@ def main() -> None:
         f"Current highest-priority band in this run: **{top_band}** · "
         f"Top region share: **{top_share:.1f}%** · Population covered (sample): **{total_pop / 1_000_000:.2f} M**"
     )
+
+    st.subheader("Focus region brief")
+    fcol1, fcol2 = st.columns((1, 1), gap="large")
+    focus_why, focus_action = _focus_region_text(result, selected_region)
+    with fcol1:
+        st.markdown(f"#### Why **{selected_region}** is positioned this way")
+        st.write(focus_why)
+    with fcol2:
+        st.markdown("#### Recommendation for this region")
+        st.write(focus_action)
 
     st.subheader("Ministerial brief")
     st.caption("Decision summary in three parts: risk, implication, and immediate action.")
